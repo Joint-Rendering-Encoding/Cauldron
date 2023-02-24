@@ -33,6 +33,10 @@ struct Benchmark
     bool exitWhenTimeEnds;
     int cameraId;
 
+    bool warmingUpForScreenshot = false;
+    int warmedUpFrames = 0;
+    std::string lastScreenShotName = "";
+
     GLTFCommon *m_pGltfLoader;
 
     BenchmarkSequence m_sequence;
@@ -148,7 +152,7 @@ void BenchmarkConfig(const json& benchmark, int cameraId, GLTFCommon *pGltfLoade
     bm.m_pGltfLoader = pGltfLoader;    
 }
 
-float BenchmarkLoop(const std::vector<TimeStamp> &timeStamps, Camera *pCam, std::string& outScreenShotName)
+float BenchmarkLoop(const std::vector<TimeStamp> &timeStamps, Camera *pCam, bool *bReset, std::string& outScreenShotName)
 {
     if (bm.frame < bm.warmUpFrames) // warmup
     {
@@ -201,9 +205,19 @@ float BenchmarkLoop(const std::vector<TimeStamp> &timeStamps, Camera *pCam, std:
                     const bool bShouldTakeScreenshot = !keyFrame.m_screenShotName.empty();
                     if (bShouldTakeScreenshot)
                     {
-                        outScreenShotName = keyFrame.m_screenShotName;
+                        bm.warmingUpForScreenshot = true;
+                        *bReset = true;
+                        bm.lastScreenShotName = keyFrame.m_screenShotName;
                     }
                 }
+            }
+
+            if (bm.warmingUpForScreenshot) bm.warmedUpFrames++;
+            if (bm.warmingUpForScreenshot && bm.warmedUpFrames > bm.warmUpFrames)
+            {
+                bm.warmingUpForScreenshot = false;
+                bm.warmedUpFrames = 0;
+                outScreenShotName = bm.lastScreenShotName;
             }
         }
     }
