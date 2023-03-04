@@ -24,6 +24,8 @@
 struct Benchmark
 {
     int warmUpFrames;
+    int warmUpFramesScreenshot;
+    bool resetBeforeWarmUp;
     int runningTimeWhenNoAnimation;
     FILE *f = NULL;
     float timeStep;
@@ -83,7 +85,9 @@ void BenchmarkConfig(const json& benchmark, int cameraId, GLTFCommon *pGltfLoade
     bm.f = NULL;
     bm.frame = 0;
     // the number of frames to run before the benchmark starts
-    bm.warmUpFrames = benchmark.value("warmUpFrames", 200);    
+    bm.warmUpFrames = benchmark.value("warmUpFrames", 200);
+    bm.warmUpFramesScreenshot = benchmark.value("warmUpFramesScreenshot", 0);
+    bm.resetBeforeWarmUp = benchmark.value("resetBeforeWarmUp", false);
     bm.exitWhenTimeEnds = benchmark.value("exitWhenTimeEnds", true);
     
     //get filename and open it
@@ -206,14 +210,14 @@ float BenchmarkLoop(const std::vector<TimeStamp> &timeStamps, Camera *pCam, bool
                     if (bShouldTakeScreenshot)
                     {
                         bm.warmingUpForScreenshot = true;
-                        *bReset = true;
+                        *bReset = bm.resetBeforeWarmUp ? true : *bReset;
                         bm.lastScreenShotName = keyFrame.m_screenShotName;
                     }
                 }
             }
 
             if (bm.warmingUpForScreenshot) bm.warmedUpFrames++;
-            if (bm.warmingUpForScreenshot && bm.warmedUpFrames > bm.warmUpFrames)
+            if (bm.warmingUpForScreenshot && bm.warmedUpFrames > bm.warmUpFramesScreenshot)
             {
                 bm.warmingUpForScreenshot = false;
                 bm.warmedUpFrames = 0;
