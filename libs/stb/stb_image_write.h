@@ -176,7 +176,7 @@ STBIWDEF int stbi_write_png(char const *filename, int w, int h, int comp, const 
 STBIWDEF int stbi_write_bmp(char const *filename, int w, int h, int comp, const void  *data);
 STBIWDEF int stbi_write_tga(char const *filename, int w, int h, int comp, const void  *data);
 STBIWDEF int stbi_write_hdr(char const *filename, int w, int h, int comp, const float *data);
-STBIWDEF int stbi_write_jpg(char const *filename, int x, int y, int comp, const void  *data, int quality);
+STBIWDEF int stbi_write_jpg(char const *filename, int x, int y, int comp, const void  *data, unsigned long long heapSize, int quality);
 
 #ifdef STBI_WINDOWS_UTF8
 STBIWDEF int stbiw_convert_wchar_to_utf8(char *buffer, size_t bufferlen, const wchar_t* input);
@@ -335,6 +335,7 @@ static int stbi__start_write_file(stbi__write_context *s, const char *filename)
 
 static void stbi__end_write_file(stbi__write_context *s)
 {
+   fflush((FILE *)s->context);
    fclose((FILE *)s->context);
 }
 
@@ -1557,17 +1558,160 @@ STBIWDEF int stbi_write_jpg_to_func(stbi_write_func *func, void *context, int x,
    return stbi_write_jpg_core(&s, x, y, comp, (void *) data, quality);
 }
 
-
 #ifndef STBI_WRITE_NO_STDIO
-STBIWDEF int stbi_write_jpg(char const *filename, int x, int y, int comp, const void *data, int quality)
+#include <Windows.h>
+
+#define MAX_SEM_COUNT 16
+HANDLE ghSemaphore;
+bool init = false;
+
+std::vector<HANDLE> threads;
+
+typedef struct
 {
-   stbi__write_context s;
-   if (stbi__start_write_file(&s,filename)) {
-      int r = stbi_write_jpg_core(&s, x, y, comp, data, quality);
-      stbi__end_write_file(&s);
-      return r;
-   } else
+   char *filename;
+   int width;
+   int height;
+   int comp;
+   void *data;
+   int quality;
+} threadParameters;
+
+// write a function that waits for semaphore
+void WINAPI WaitForThreads()
+{
+   // Wait until all threads have terminated.
+   WaitForMultipleObjects(threads.size(), &threads[0], TRUE, INFINITE);
+
+   // Close all thread handles and free memory allocations.
+   for (int i = 0; i < threads.size(); i++)
+      CloseHandle(threads[i]);
+}
+
+DWORD WINAPI PerformOperation(LPVOID lpParameter)
+{
+   // Lock mutex and increase thread count
+   DWORD dwWaitResult;
+
+   dwWaitResult = WaitForSingleObject(
+       ghSemaphore, // handle to semaphore
+       INFINITE);   // infinite time-out
+
+   // Unpack thread parameters
+   threadParameters *params = (threadParameters *)lpParameter;
+   char *filename = params->filename;
+   int x = params->width;
+   int y = params->height;
+   int comp = params->comp;
+   void *data = params->data;
+   int quality = params->quality;
+
+   switch (dwWaitResult)
+   {
+      // The semaphore object was signaled.
+   case WAIT_OBJECT_0:
+   {
+      stbi__write_context s;
+      DWORD fh_r, w_r;
+      fh_r = stbi__start_write_file(&s, filename);
+      if (fh_r)
+      {
+         w_r = stbi_write_jpg_core(&s, x, y, comp, data, quality);
+         stbi__end_write_file(&s);
+      }
+
+      // Release the semaphore when task is finished
+      LONG prevCount;
+      if (!ReleaseSemaphore(
+              ghSemaphore, // handle to semaphore
+              1,           // increase count by one
+              &prevCount)) // previous count
+      {
+         Trace("ReleaseSemaphore error: %d\n", GetLastError());
+      }
+
+      // free memory
+      free(params->data);
+      free(params->filename);
+      free(params);
+
+      if (!fh_r)
+         Trace("Save Thread %d could not open file handle!", GetCurrentThreadId());
+      else if (w_r == 0)
+         Trace("Save Thread %d could not write the JPG to file!", GetCurrentThreadId());
+      else
+         Trace("Save Thread %d completed. Previous semaphore was %d", GetCurrentThreadId(), prevCount);
+      break;
+   }
+
+      // The semaphore was nonsignaled, so a time-out occurred.
+   case WAIT_TIMEOUT:
+      Trace("Save Thread %d: wait timed out\n", GetCurrentThreadId());
+      break;
+   }
+
+   return 0;
+}
+
+STBIWDEF int stbi_write_jpg(char const *filename, int x, int y, int comp, const void *data, unsigned long long heapSize, int quality)
+{
+   if (!init)
+   {
+      ghSemaphore = CreateSemaphore(
+          NULL,          // default security attributes
+          MAX_SEM_COUNT, // initial count
+          MAX_SEM_COUNT, // maximum count
+          NULL);         // unnamed semaphore
+
+      if (ghSemaphore == NULL)
+      {
+         Trace("CreateSemaphore error: %d\n", GetLastError());
+         return 0;
+      }
+      init = true;
+   }
+
+   // copy and pack parameters
+   threadParameters *params = (threadParameters *)malloc(sizeof(threadParameters));
+   params->width = x;
+   params->height = y;
+   params->comp = comp;
+   params->quality = quality;
+
+   // copy filename
+   size_t len = strlen(filename);
+   char *filename_copy = (char *)malloc(len + 1);
+   strcpy(filename_copy, filename);
+   params->filename = filename_copy;
+
+   // copy data
+   size_t data_size = heapSize;
+   void *data_copy = malloc(data_size);
+   memcpy(data_copy, data, data_size);
+   params->data = data_copy;
+
+   // Create a new thread which will start at the DoStuff function
+   HANDLE hThread = CreateThread(
+       NULL,             // Thread attributes
+       0,                // Stack size (0 = use default)
+       PerformOperation, // Thread start address
+       params,           // Parameter to pass to the thread
+       0,                // Creation flags
+       NULL);            // Thread id
+   if (hThread == NULL)
+   {
+      // Thread creation failed.
+      Trace("CreateThread error: %d\n", GetLastError());
       return 0;
+   }
+   threads.push_back(hThread);
+
+   // if filename is the last one wait for all threads to finish
+   std::string str(filename);
+   if (str.find("last") != std::string::npos)
+      WaitForThreads();
+
+   return 1;
 }
 #endif
 

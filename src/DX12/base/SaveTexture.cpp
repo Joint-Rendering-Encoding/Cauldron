@@ -90,7 +90,7 @@ namespace CAULDRON_DX12
         range.Begin = 0;
         range.End = UplHeapSize;
         pResourceReadBack->Map(0, &range, reinterpret_cast<void**>(&pTimingsBuffer));
-        stbi_write_jpg(pFilename, (int)bufferFromDesc.Width, (int)bufferFromDesc.Height, 4, pTimingsBuffer, 100);
+        stbi_write_jpg(pFilename, (int)bufferFromDesc.Width, (int)bufferFromDesc.Height, 4, pTimingsBuffer, UplHeapSize, 100);
         pResourceReadBack->Unmap(0, NULL);
 
         pResourceReadBack->Release();
